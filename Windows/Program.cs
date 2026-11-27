@@ -438,18 +438,18 @@ internal static class Engines
         string draft = "";
         string instructions = await File.ReadAllTextAsync(Path.Combine(Root, "MinutesPrompt.txt"), Encoding.UTF8);
         string promptPath = Path.Combine(folder, "prompt.txt");
-        for (int offset = 0; offset < transcript.Length;)
+        string terms = LimitGlossary(glossary, 1200).Replace("<|", "< |");
+        // Whole lines, about 3000 characters each: fewer model runs than fixed
+        // 2500-character cuts, and no sentence is split between two prompts.
+        foreach (string chunk in TranscriptChunks.Split(transcript))
         {
-            int length = Math.Min(2500, transcript.Length - offset);
-            if (offset + length < transcript.Length && char.IsHighSurrogate(transcript[offset + length - 1])) length--;
-            string incoming = transcript.Substring(offset, length).Replace("<|", "< |");
-            offset += length;
+            string incoming = chunk.Replace("<|", "< |");
             string prompt = $"""
                 <|im_start|>system
                 {instructions.TrimEnd()}<|im_end|>
                 <|im_start|>user
                 <표기용어>
-                {LimitGlossary(glossary, 1200).Replace("<|", "< |")}
+                {terms}
                 </표기용어>
                 <이전초안>
                 {draft.Replace("<|", "< |")}

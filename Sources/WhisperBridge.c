@@ -45,7 +45,7 @@ void *scribe_whisper_channel(void *model) {
     return channel;
 }
 
-const char *scribe_whisper_run(void *opaque, const float *samples, int count, const char *prompt) {
+const char *scribe_whisper_run(void *opaque, const float *samples, int count, const char *prompt, int threads) {
     Engine *engine = opaque;
     free(engine->text);
     engine->text = NULL;
@@ -57,7 +57,7 @@ const char *scribe_whisper_run(void *opaque, const float *samples, int count, co
     params.no_speech_thold = 0.5f;
     params.no_timestamps = true;
     params.print_progress = false;
-    params.n_threads = 4;
+    params.n_threads = threads > 0 ? threads : 4;
     if (whisper_full_with_state(engine->model, engine->state, params, samples, count) != 0) return NULL;
 
     int segments = whisper_full_n_segments_from_state(engine->state);

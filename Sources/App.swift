@@ -22,7 +22,6 @@ private struct MeetingView: View {
     @State private var confirmingReset = false
     @State private var confirmingRegenerate = false
     @State private var editingGlossary = false
-    @State private var followingTranscript = true
 
     private var busy: Bool { meeting.phase != .idle || meeting.generating }
 
@@ -40,7 +39,7 @@ private struct MeetingView: View {
                     .foregroundStyle(.secondary)
             }
             HSplitView {
-                transcriptPanel.frame(minWidth: 310)
+                TranscriptPanel(meeting: meeting).frame(minWidth: 310)
                 minutesPanel.frame(minWidth: 330)
             }
         }
@@ -151,57 +150,11 @@ private struct MeetingView: View {
             } else if meeting.phase == .recording || meeting.phase == .finishing {
                 HStack(spacing: 20) {
                     ForEach(meeting.recordingSources, id: \.self) { source in
-                        ProgressView(value: meeting.levels[source] ?? 0) {
-                            Text(source.rawValue).font(.caption)
-                        }
-                        .frame(width: 145)
-                        .tint(source == .room ? .indigo : .teal)
+                        LevelMeter(meeting: meeting, source: source)
                     }
                     Spacer()
                 }
             }
-        }
-    }
-
-    private var transcriptPanel: some View {
-        VStack(alignment: .leading, spacing: 10) {
-            HStack {
-                Text("실시간 받아쓰기").font(.headline)
-                Spacer()
-                Toggle("자동 스크롤", isOn: $followingTranscript).font(.caption)
-            }
-            ScrollViewReader { scroll in
-                ScrollView {
-                    LazyVStack(alignment: .leading, spacing: 10) {
-                        ForEach(meeting.orderedEntries) { entry in
-                            transcriptRow(entry.line, source: entry.source)
-                        }
-                        if meeting.entries.isEmpty {
-                            Text("발언이 여기에 표시됩니다.").foregroundStyle(.secondary)
-                        }
-                        Color.clear.frame(height: 1).id("transcript-end")
-                    }
-                    .frame(maxWidth: .infinity, alignment: .leading)
-                    .padding(12)
-                }
-                .textSelection(.enabled)
-                .onChange(of: meeting.entries.last?.id) { _, _ in
-                    if followingTranscript { scroll.scrollTo("transcript-end", anchor: .bottom) }
-                }
-
-            }
-            .background(.background, in: RoundedRectangle(cornerRadius: 10))
-            .overlay(RoundedRectangle(cornerRadius: 10).strokeBorder(.quaternary))
-        }
-        .padding(.trailing, 9)
-    }
-
-    private func transcriptRow(_ text: String, source: Source) -> some View {
-        HStack(alignment: .top, spacing: 8) {
-            Circle().fill(source == .room ? Color.indigo : Color.teal)
-                .frame(width: 6, height: 6).padding(.top, 6)
-                .accessibilityLabel(source.rawValue)
-            Text(text)
         }
     }
 
@@ -251,6 +204,70 @@ private struct MeetingView: View {
     }
 }
 
+
+/// Input level meter. A separate view so that the ~8 level updates per second
+/// re-render only the meter, not the transcript list and minutes editor.
+private struct LevelMeter: View {
+    let meeting: Meeting
+    let source: Source
+
+    var body: some View {
+        ProgressView(value: meeting.levels[source] ?? 0) {
+            Text(source.rawValue).font(.caption)
+        }
+        .frame(width: 145)
+        .tint(source == .room ? .indigo : .teal)
+    }
+}
+
+/// Live transcript. A separate view so typing in the minutes editor or level
+/// updates do not rebuild the (possibly long) transcript list.
+private struct TranscriptPanel: View {
+    let meeting: Meeting
+    @State private var followingTranscript = true
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 10) {
+            HStack {
+                Text("실시간 받아쓰기").font(.headline)
+                Spacer()
+                Toggle("자동 스크롤", isOn: $followingTranscript).font(.caption)
+            }
+            ScrollViewReader { scroll in
+                ScrollView {
+                    LazyVStack(alignment: .leading, spacing: 10) {
+                        ForEach(meeting.orderedEntries) { entry in
+                            transcriptRow(entry.line, source: entry.source)
+                        }
+                        if meeting.entries.isEmpty {
+                            Text("발언이 여기에 표시됩니다.").foregroundStyle(.secondary)
+                        }
+                        Color.clear.frame(height: 1).id("transcript-end")
+                    }
+                    .frame(maxWidth: .infinity, alignment: .leading)
+                    .padding(12)
+                }
+                .textSelection(.enabled)
+                .onChange(of: meeting.entries.count) { _, _ in
+                    if followingTranscript { scroll.scrollTo("transcript-end", anchor: .bottom) }
+                }
+
+            }
+            .background(.background, in: RoundedRectangle(cornerRadius: 10))
+            .overlay(RoundedRectangle(cornerRadius: 10).strokeBorder(.quaternary))
+        }
+        .padding(.trailing, 9)
+    }
+
+    private func transcriptRow(_ text: String, source: Source) -> some View {
+        HStack(alignment: .top, spacing: 8) {
+            Circle().fill(source == .room ? Color.indigo : Color.teal)
+                .frame(width: 6, height: 6).padding(.top, 6)
+                .accessibilityLabel(source.rawValue)
+            Text(text)
+        }
+    }
+}
 
 @MainActor
 private final class ScribeAppDelegate: NSObject, NSApplicationDelegate {

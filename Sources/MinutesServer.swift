@@ -117,7 +117,7 @@ final class MinutesServer {
                            String(ProcessInfo.processInfo.processIdentifier), Minutes.executable.path] + [
             "-m", Minutes.model.path, "--host", "127.0.0.1", "--port", String(port),
             "--api-key", key, "--no-webui", "--parallel", "1", "-c", "16384",
-            "-t", "4", "--log-disable"
+            "-t", String(ScribeResources.computeThreads), "--log-disable"
         ] + (useGPU ? [] : ["--device", "none", "--no-op-offload", "-ngl", "0"])
         child.standardOutput = FileHandle.nullDevice
         child.standardError = FileHandle.nullDevice

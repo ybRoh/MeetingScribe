@@ -23,30 +23,25 @@ enum Minutes {
         return nil
     }
 
+    /// Read once: the prompt file is part of the signed app bundle and never changes at run time.
+    private static let instructions: String? = Bundle.main.url(forResource: "MinutesPrompt", withExtension: "txt")
+        .flatMap { try? String(contentsOf: $0, encoding: .utf8) }
+
     static func update(previous: String, entries: [Utterance], glossary: String = "") async throws -> String {
         if let reason = unavailableReason { throw ScribeError(reason) }
         var draft = previous
-        var batch = ""
-        for entry in entries {
+        for batch in MinutesBatches.make(entries) {
             try Task.checkCancellation()
-            for chunk in entry.line.chunks(of: 2500) {
-                if batch.count + chunk.count > 3000 && !batch.isEmpty {
-                    draft = try await generate(previous: draft, incoming: batch, glossary: glossary)
-                    batch = ""
-                }
-                batch += chunk + "\n"
-            }
+            draft = try await generate(previous: draft, incoming: batch, glossary: glossary)
         }
-        if !batch.isEmpty { draft = try await generate(previous: draft, incoming: batch, glossary: glossary) }
         return draft
     }
 
     private static func generate(previous: String, incoming: String, glossary: String) async throws -> String {
         try Task.checkCancellation()
-        guard let instructionsURL = Bundle.main.url(forResource: "MinutesPrompt", withExtension: "txt") else {
+        guard let instructions = Self.instructions else {
             throw ScribeError("회의록 지침 파일을 찾을 수 없습니다.")
         }
-        let instructions = try String(contentsOf: instructionsURL, encoding: .utf8)
         let data = """
             <표기용어>
             \(glossary.prefix(1200))
@@ -79,18 +74,5 @@ enum Minutes {
             throw ScribeError("로컬 회의록 모델이 결과를 반환하지 않았습니다.")
         }
         return ToDoList.atEnd(of: text)
-    }
-}
-
-private extension String {
-    func chunks(of length: Int) -> [Substring] {
-        var chunks: [Substring] = []
-        var remaining = self[...]
-        while !remaining.isEmpty {
-            let chunk = remaining.prefix(length)
-            chunks.append(chunk)
-            remaining = remaining.dropFirst(chunk.count)
-        }
-        return chunks
     }
 }

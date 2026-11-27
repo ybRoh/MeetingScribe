@@ -39,7 +39,8 @@ final class Meeting {
     @ObservationIgnored private var captureID: UUID?
 
     var transcript: String { orderedEntries.map(\.line).joined(separator: "\n") }
-    var orderedEntries: [Utterance] { entries.sorted { $0.seconds < $1.seconds } }
+    /// `entries` is kept in time order on insert (see `receive`), so this is free.
+    var orderedEntries: [Utterance] { entries }
     var isMicrophoneOnly: Bool { selection == Self.microphoneOnly }
     var recordingSources: [Source] { isMicrophoneOnly ? [.room] : Source.allCases }
     var hasMaterial: Bool { !entries.isEmpty || !draft.isEmpty }
@@ -64,7 +65,7 @@ final class Meeting {
     func restoreRecovery() {
         guard let recovery else { return }
         title = recovery.title
-        entries = recovery.entries
+        entries = recovery.entries.sorted { $0.seconds < $1.seconds }
         draft = recovery.draft
         started = recovery.started
         summarizedIDs = recovery.summarizedIDs
@@ -191,20 +192,20 @@ final class Meeting {
         guard !text.isEmpty else { return }
         var entry = Utterance(source: source, seconds: seconds, text: text)
         let candidate = entry.comparisonText
-        let nearby: (Utterance) -> Bool = { $0.source != source && abs($0.seconds - seconds) < 6 }
-        if candidate.count >= 8, let match = entries.lastIndex(where: { nearby($0) && $0.comparisonText == candidate }) {
+        // Only utterances within 6 s on the other channel can be the same speech.
+        let nearby = entries.indices(near: seconds, within: 6).filter { entries[$0].source != source }
+        if candidate.count >= 8, let match = nearby.last(where: { entries[$0].comparisonText == candidate }) {
             if source == .room { return }
             entry.id = entries[match].id
-            entries[match] = entry
+            entries.remove(at: match)
+            entries.insertSorted(entry)
             return
         }
-        if entries.reversed().prefix(30).contains(where: {
-            nearby($0) && TranscriptSimilarity.matches($0.comparisonText, candidate)
-        }) {
+        if nearby.contains(where: { TranscriptSimilarity.matches(entries[$0].comparisonText, candidate) }) {
             entry.overlapsOtherChannel = true
         }
         let firstEntry = entries.isEmpty
-        entries.append(entry)
+        entries.insertSorted(entry)
         if firstEntry { checkpoint() }
     }
 
@@ -227,7 +228,8 @@ final class Meeting {
         checkpoint()
         timer?.cancel()
         timer = nil
-        liveTask?.cancel()
+        // Let an in-flight draft update finish: cancelling it restarts the local
+        // model server and redoes the same batch, which makes stopping slower.
         if let stream {
             do { try await stream.stopCapture() }
             catch { status = error.localizedDescription }

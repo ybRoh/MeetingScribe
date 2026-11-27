@@ -6,6 +6,7 @@
   </PropertyGroup>
   <ItemGroup>
     <Compile Include="../../Windows/ToDoList.cs" Link="ToDoList.cs" />
+    <Compile Include="../../Windows/TranscriptChunks.cs" Link="TranscriptChunks.cs" />
     <Content Include="../ToDoCases.json" Link="ToDoCases.json" CopyToOutputDirectory="PreserveNewest" />
   </ItemGroup>
 </Project>

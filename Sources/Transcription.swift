@@ -19,7 +19,7 @@ final class WhisperModel: @unchecked Sendable {
 }
 
 final class SpeechChannel: @unchecked Sendable {
-    static let sampleRate = 16_000
+    static let sampleRate = SpeechSegmenter.sampleRate
     static let modelName = "ggml-large-v3-turbo-q5_0.bin"
 
     static var modelURL: URL {
@@ -36,12 +36,7 @@ final class SpeechChannel: @unchecked Sendable {
     private let (results, output) = AsyncStream.makeStream(of: Segment.self)
     private var reader: Task<Void, Never>?
     // Segmentation state is confined to the serial capture queue.
-    private var samples: [Float] = []
-    private var segmentStart: Double?
-    private var quietSamples = 0
-    private var loudSamples = 0
-    private let minimumThreshold: Float
-    private var noiseFloor: Float = 0
+    private var segmenter: SpeechSegmenter
 
     private struct Segment: Sendable {
         let text: String?
@@ -57,7 +52,7 @@ final class SpeechChannel: @unchecked Sendable {
         self.engine = engine
         self.model = model
         self.glossary = String(glossary.prefix(400))
-        self.minimumThreshold = source == .room ? 0.0015 : 0.001
+        self.segmenter = SpeechSegmenter(minimumThreshold: source == .room ? 0.0015 : 0.001)
         let incoming = results
         self.reader = Task {
             for await segment in incoming {
@@ -73,44 +68,27 @@ final class SpeechChannel: @unchecked Sendable {
     deinit { scribe_whisper_end_channel(engine) }
 
     func append(_ buffer: AVAudioPCMBuffer, endTime: Double) {
-        guard let pointer = buffer.floatChannelData?.pointee else { return }
-        let count = Int(buffer.frameLength)
-        guard count > 0 else { return }
-        let block = UnsafeBufferPointer(start: pointer, count: count)
-        let rms = sqrt(block.reduce(Float(0)) { $0 + $1 * $1 } / Float(count))
-        let rate = Self.sampleRate
-        let threshold = max(minimumThreshold, noiseFloor * 2.5)
-        if rms >= threshold {
-            quietSamples = 0
-            loudSamples += count
-        } else {
-            quietSamples += count
-            noiseFloor += (rms - noiseFloor) * 0.05
-        }
-        if segmentStart == nil { segmentStart = max(0, endTime - Double(count) / Double(rate)) }
-        samples.append(contentsOf: block)
-        if samples.count >= rate * 22 || (samples.count >= rate * 2 && quietSamples >= rate * 8 / 10) {
-            flush()
-        }
+        guard let pointer = buffer.floatChannelData?.pointee, buffer.frameLength > 0 else { return }
+        let block = UnsafeBufferPointer(start: pointer, count: Int(buffer.frameLength))
+        if let segment = segmenter.append(block, endTime: endTime) { recognize(segment) }
     }
 
     func flush() {
-        let slice = samples
-        let seconds = segmentStart ?? 0
-        let hasLittleSpeech = loudSamples < Self.sampleRate
-        segmentStart = nil
-        samples = []
-        defer { loudSamples = 0; quietSamples = 0 }
-        guard loudSamples >= Self.sampleRate / 6 else { return }
+        if let segment = segmenter.flush() { recognize(segment) }
+    }
+
+    private static let boilerplate: Set<String> = ["시청해 주셔서 감사합니다", "시청해주셔서 감사합니다", "구독과 좋아요 부탁드립니다"]
+
+    private func recognize(_ segment: SpeechSegmenter.Segment) {
         model.recognitionQueue.async { [self] in
-            let text = slice.withUnsafeBufferPointer { buffer in
-                scribe_whisper_run(engine, buffer.baseAddress, Int32(buffer.count), glossary).map { String(cString: $0) }
+            let text = segment.samples.withUnsafeBufferPointer { buffer in
+                scribe_whisper_run(engine, buffer.baseAddress, Int32(buffer.count), glossary,
+                                   Int32(ScribeResources.computeThreads)).map { String(cString: $0) }
             }
             let cleaned = text?.trimmingCharacters(in: .whitespacesAndNewlines)
             let phrase = cleaned?.trimmingCharacters(in: .punctuationCharacters)
-            let boilerplate = ["시청해 주셔서 감사합니다", "시청해주셔서 감사합니다", "구독과 좋아요 부탁드립니다"]
-            if hasLittleSpeech, let phrase, boilerplate.contains(phrase) { return }
-            output.yield(Segment(text: cleaned, seconds: seconds))
+            if segment.hasLittleSpeech, let phrase, Self.boilerplate.contains(phrase) { return }
+            output.yield(Segment(text: cleaned, seconds: segment.seconds))
         }
     }
 
