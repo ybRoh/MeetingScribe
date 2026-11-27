@@ -1,11 +1,12 @@
 #!/bin/bash
 set -euo pipefail
 cd "$(dirname "$0")"
-mkdir -p dist/models
+models_dir="${1:-dist/models}"
+mkdir -p "$models_dir"
 
 download_model() {
   local name="$1" address="$2" hash="$3" kind="$4"
-  local file="dist/models/$name"
+  local file="$models_dir/$name"
   if [[ -f "$file" ]] && printf '%s  %s\n' "$hash" "$file" | shasum -a "$kind" -c -; then
     return
   fi

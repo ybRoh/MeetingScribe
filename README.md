@@ -1,12 +1,15 @@
 # 회의록 서기
 
-회의록 서기는 Mac과 Windows용 한국어 회의 기록 앱입니다. 대면 회의는 컴퓨터 마이크로 기록합니다. Mac의 하이브리드 모드는 마이크와 선택한 Zoom·Teams 데스크톱 앱의 재생음을 분리해 받아씁니다. 한국어 받아쓰기는 Whisper, 회의록은 Qwen3와 llama.cpp로 기기에서 처리합니다. 배포 ZIP에는 공개 모델과 실행 엔진이 들어 있습니다.
+회의록 서기는 Mac과 Windows용 한국어 회의 기록 앱입니다. 대면 회의는 컴퓨터 마이크로 기록합니다. Mac의 하이브리드 모드는 마이크와 선택한 Zoom·Teams 데스크톱 앱의 재생음을 분리해 받아씁니다. 한국어 받아쓰기는 Whisper, 회의록은 Qwen3와 llama.cpp로 기기에서 처리합니다. GitHub 배포 ZIP에는 실행 엔진이 들어 있으며, 처음 한 번 공개 모델을 다운로드합니다.
 
-## 배포 ZIP 실행
+## 다운로드
 
-- **Apple Silicon Mac**: `dist/MeetingScribe-1.1.0-macOS-arm64.zip`을 풀고 `회의록 서기.app`을 응용 프로그램 폴더로 옮겨 실행하세요. 검증 환경은 macOS 27.0.1입니다. 개발자 ID 서명과 공증이 적용되기 전의 배포 파일입니다.
-- **Windows 11 x64**: `dist/MeetingScribe-1.1.0-Windows-x64.zip` 전체를 풀고 `MeetingScribe.exe`를 실행하세요. [Microsoft Visual C++ Redistributable x64](https://aka.ms/vc14/vc_redist.x64.exe)가 필요합니다. Windows판은 대면 회의 마이크 녹음을 지원하며, 기록 종료 후 받아쓰기를 시작합니다. 처리용 임시 녹음 파일은 처리 종료 시 삭제합니다.
-- 회의록 하단 **To-Do List**에 합의된 실행 항목을 Markdown 체크리스트로 추가합니다. 각 항목은 업무, 담당자, 기한 순서입니다.
+- **[Mac 배포 ZIP · Apple Silicon](https://github.com/ybRoh/MeetingScribe/releases/download/v1.1.0/MeetingScribe-1.1.0-macOS-arm64.zip)**
+  압축을 풀고 `Setup-Mac.command`를 처음 한 번 실행하세요. 이후에는 같은 폴더의 `회의록 서기.app`을 엽니다. 검증 환경은 macOS 27.0.1이며 Apple Developer ID 서명과 공증은 적용되지 않았습니다.
+- **[Windows 배포 ZIP · Windows 11 x64](https://github.com/ybRoh/MeetingScribe/releases/download/v1.1.0/MeetingScribe-1.1.0-Windows-x64.zip)**
+  전체 압축을 풀고 `Setup-Windows.cmd`를 처음 한 번 실행하세요. 이후에는 같은 폴더의 `MeetingScribe.exe`를 엽니다. [Microsoft Visual C++ Redistributable x64](https://learn.microsoft.com/en-us/cpp/windows/latest-supported-vc-redist)가 필요합니다. Windows판은 대면 회의 마이크 녹음을 지원하며, 기록 종료 후 받아쓰기를 시작합니다. 처리용 임시 녹음 파일은 처리 종료 시 삭제합니다.
+
+최초 설정에서 모델 약 3 GB를 다운로드합니다. 이후 회의 내용은 기기에서 처리합니다. 회의록 하단 **To-Do List**의 각 항목은 업무, 담당자, 기한 순서입니다.
 
 ## Mac 개발 빌드 실행
 
