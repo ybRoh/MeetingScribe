@@ -59,9 +59,20 @@ final class MinutesServer {
             "prompt": prompt, "n_predict": 3000, "temperature": 0.15,
             "stop": ["<|im_end|>", "<|endoftext|>"], "cache_prompt": true
         ])
-        // Cancelling the URLSession request closes this completion's connection.
-        // The server releases the request slot while keeping the model resident.
-        let (payload, response) = try await session.data(for: request)
+        let payload: Data
+        let response: URLResponse
+        do {
+            (payload, response) = try await session.data(for: request)
+            try Task.checkCancellation()
+        } catch {
+            if Task.isCancelled {
+                // Make the active slot available even if the server has not
+                // detected a disconnected HTTP client yet.
+                stopProcess()
+                throw CancellationError()
+            }
+            throw error
+        }
         guard (response as? HTTPURLResponse)?.statusCode == 200 else {
             throw ScribeError("로컬 회의록 모델 요청이 실패했습니다.")
         }
