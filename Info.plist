@@ -7,8 +7,6 @@
   <key>CFBundleDisplayName</key><string>회의록 서기</string>
   <key>CFBundleExecutable</key><string>MeetingScribe</string>
   <key>CFBundlePackageType</key><string>APPL</string>
-  <key>CFBundleVersion</key><string>2</string>
-  <key>CFBundleShortVersionString</key><string>1.1.0</string>
   <key>LSMinimumSystemVersion</key><string>26.0</string>
   <key>NSMicrophoneUsageDescription</key><string>회의실 참석자의 발언을 Mac에서 받아쓰려면 마이크 접근이 필요합니다.</string>
 </dict>

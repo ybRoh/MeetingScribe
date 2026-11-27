@@ -7,14 +7,19 @@
 - **[Mac 배포 ZIP · Apple Silicon](https://github.com/ybRoh/MeetingScribe/releases/download/v1.1.0/MeetingScribe-1.1.0-macOS-arm64.zip)**
   압축을 풀고 `Setup-Mac.command`를 처음 한 번 실행하세요. 이후에는 같은 폴더의 `회의록 서기.app`을 엽니다. 검증 환경은 macOS 27.0.1이며 Apple Developer ID 서명과 공증은 적용되지 않았습니다.
 - **[Windows 배포 ZIP · Windows 11 x64](https://github.com/ybRoh/MeetingScribe/releases/download/v1.1.0/MeetingScribe-1.1.0-Windows-x64.zip)**
-  전체 압축을 풀고 `Setup-Windows.cmd`를 처음 한 번 실행하세요. 이후에는 같은 폴더의 `MeetingScribe.exe`를 엽니다. [Microsoft Visual C++ Redistributable x64](https://learn.microsoft.com/en-us/cpp/windows/latest-supported-vc-redist)가 필요합니다. Windows판은 대면 회의 마이크 녹음을 지원하며, 기록 종료 후 받아쓰기를 시작합니다. 처리용 임시 녹음 파일은 처리 종료 시 삭제합니다.
+  전체 압축을 풀고 `Setup-Windows.cmd`를 처음 한 번 실행하세요. 이후에는 같은 폴더의 `MeetingScribe.exe`를 엽니다. [Microsoft Visual C++ Redistributable x64](https://learn.microsoft.com/en-us/cpp/windows/latest-supported-vc-redist)가 필요합니다. Windows판은 대면 회의 마이크 녹음을 지원하며, 기록 종료 후 받아쓰기를 시작합니다. 처리 실패나 취소 시 WAV를 보관합니다. 성공 시 결과를 복구 폴더에 먼저 저장하고 처리용 WAV를 지웁니다.
 
 최초 설정에서 모델 약 3 GB를 다운로드합니다. 이후 회의 내용은 기기에서 처리합니다. 회의록 하단 **To-Do List**의 각 항목은 업무, 담당자, 기한 순서입니다.
+
+## 데이터 복구와 회의록 편집
+
+- Mac은 시스템의 Application Support에 받아쓰기와 편집 중인 회의록을 1분마다 자동 저장합니다. 다음 실행에서 자동 저장본을 복구할 수 있습니다.
+- Windows는 **복구 열기**에서 자동 보관된 회의록이나 처리하지 못한 녹음을 고를 수 있습니다. 실패한 녹음은 **다시 시도**하거나 WAV로 저장할 수 있습니다.
+- 두 앱에서 마이크와 사내 용어집을 설정하고 Markdown 또는 Word로 저장할 수 있습니다. Mac은 기록 중 만든 초안을 이어서 마무리합니다.
 
 ## Mac 개발 빌드 실행
 
 - `dist/회의록 서기.app`을 Finder에서 엽니다.
-- 이 Mac에는 두 모델을 배치해 두었습니다. 앱을 옮길 때 옆의 `models` 폴더도 같이 옮기세요.
 - 다른 Mac에서 준비하려면 Xcode Command Line Tools와 Homebrew를 설치한 뒤 `brew install whisper.cpp llama.cpp`, `./setup-models.sh`, `./build.sh`를 실행하세요.
 - 회의록 모델이 준비되지 않아도 받아쓰기를 진행할 수 있습니다. 모델을 준비한 뒤 **다시 생성**을 누르세요.
 

@@ -1,4 +1,5 @@
 import AppKit
+import AVFoundation
 import Foundation
 import Observation
 import ScreenCaptureKit
@@ -11,6 +12,8 @@ final class Meeting {
     var title = ""
     static let microphoneOnly = "microphone"
     var selection = Meeting.microphoneOnly
+    var microphoneID = ""
+    var microphones: [AVCaptureDevice] = []
     var availableApps: [NSRunningApplication] = []
     var confirmed = false
     var entries: [Utterance] = []
@@ -20,6 +23,11 @@ final class Meeting {
     var modelStatus = Minutes.unavailableReason
     var started: Date?
     var generating = false
+    var recovery: MeetingRecovery?
+    var recoveryBlocked = false
+    var glossary = UserDefaults.standard.string(forKey: "meetingGlossary") ?? "" {
+        didSet { UserDefaults.standard.set(glossary, forKey: "meetingGlossary") }
+    }
 
     @ObservationIgnored private var channels: [Source: SpeechChannel] = [:]
     @ObservationIgnored private var stream: SCStream?
@@ -36,8 +44,76 @@ final class Meeting {
     var recordingSources: [Source] { isMicrophoneOnly ? [.room] : Source.allCases }
     var hasMaterial: Bool { !entries.isEmpty || !draft.isEmpty }
 
+    func loadRecovery() {
+        guard !hasMaterial, recovery == nil, !recoveryBlocked else { return }
+        do { recovery = try MeetingRecovery.load() }
+        catch is DecodingError {
+            do {
+                try MeetingRecovery.preserveUnreadable()
+                status = "읽을 수 없는 자동 저장본을 별도 파일로 보관했습니다."
+            } catch {
+                recoveryBlocked = true
+                status = "복구 자료 보관: \(error.localizedDescription)"
+            }
+        } catch {
+            recoveryBlocked = true
+            status = "복구 자료 읽기: \(error.localizedDescription)"
+        }
+    }
+
+    func restoreRecovery() {
+        guard let recovery else { return }
+        title = recovery.title
+        entries = recovery.entries
+        draft = recovery.draft
+        started = recovery.started
+        summarizedIDs = recovery.summarizedIDs
+        self.recovery = nil
+        status = "자동 저장된 회의를 복구했습니다."
+    }
+
+    func discardRecovery() {
+        do {
+            try MeetingRecovery.remove()
+            recovery = nil
+        } catch { status = "복구 자료 삭제: \(error.localizedDescription)" }
+    }
+
+    @discardableResult
+    func checkpoint() -> Bool {
+        guard recovery == nil, hasMaterial else { return true }
+        guard !recoveryBlocked else { return false }
+        do {
+            try MeetingRecovery(title: title, entries: entries, draft: draft,
+                                started: started, summarizedIDs: summarizedIDs).save()
+            return true
+        } catch {
+            status = "자동 저장: \(error.localizedDescription)"
+            return false
+        }
+    }
+
+    func confirmClosing() -> Bool {
+        if phase != .idle || generating {
+            let alert = NSAlert()
+            alert.messageText = "처리가 진행 중입니다."
+            alert.informativeText = "기록 중이면 기록 종료를 누르고, 처리가 끝난 뒤 창을 닫으세요."
+            alert.runModal()
+            return false
+        }
+        guard hasMaterial else { return true }
+        let alert = NSAlert()
+        alert.messageText = "회의록 서기 창을 닫을까요?"
+        alert.informativeText = "현재 받아쓰기와 회의록을 자동 저장합니다. 다음 실행에서 복구할 수 있습니다."
+        alert.addButton(withTitle: "자동 저장 후 닫기")
+        alert.addButton(withTitle: "취소")
+        return alert.runModal() == .alertFirstButtonReturn && checkpoint()
+    }
+
     func refresh() {
         availableApps = MeetingCapture.apps()
+        microphones = MeetingCapture.microphones()
+        if !microphones.contains(where: { $0.uniqueID == microphoneID }) { microphoneID = "" }
         if !isMicrophoneOnly, !availableApps.contains(where: { $0.bundleIdentifier == selection }) {
             selection = Self.microphoneOnly
         }
@@ -45,7 +121,7 @@ final class Meeting {
     }
 
     func start() async {
-        guard phase == .idle, confirmed, !hasMaterial else { return }
+        guard phase == .idle, confirmed, !hasMaterial, recovery == nil, !recoveryBlocked else { return }
         phase = .preparing
         status = "한국어 받아쓰기 모델과 오디오 권한을 준비하는 중…"
         let id = UUID()
@@ -55,6 +131,8 @@ final class Meeting {
             guard FileManager.default.fileExists(atPath: model.path) else {
                 throw ScribeError("한국어 Whisper 모델이 없습니다. 사용 안내의 모델 설치 단계를 확인하세요.")
             }
+            let speechModel = try await Task.detached { try WhisperModel(url: model) }.value
+            let terms = glossary
             for source in recordingSources {
                 let receive: @Sendable (String, Double) async -> Void = { [weak self] text, seconds in
                     await self?.receive(text, seconds: seconds, source: source, id: id)
@@ -63,7 +141,7 @@ final class Meeting {
                     await self?.report("\(source.rawValue) 받아쓰기: \(message)", id: id)
                 }
                 channels[source] = try await Task.detached {
-                    try SpeechChannel(model: model, source: source, receive: receive, onError: onError)
+                    try SpeechChannel(model: speechModel, source: source, glossary: terms, receive: receive, onError: onError)
                 }.value
             }
             let output = CaptureOutput(channels: channels) { [weak self] source, value in
@@ -78,9 +156,9 @@ final class Meeting {
             }
             self.output = output
             if isMicrophoneOnly {
-                microphone = try await MicrophoneCapture.start(output: output)
+                microphone = try await MicrophoneCapture.start(deviceID: microphoneID, output: output)
             } else {
-                stream = try await MeetingCapture.start(bundleID: selection, output: output)
+                stream = try await MeetingCapture.start(bundleID: selection, microphoneID: microphoneID, output: output)
             }
             started = Date()
             phase = .recording
@@ -111,16 +189,23 @@ final class Meeting {
         guard captureID == id else { return }
         let text = text.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !text.isEmpty else { return }
-        let entry = Utterance(source: source, seconds: seconds, text: text)
-        // Prefer the digital feed when identical text also reaches the room microphone.
-        if entry.comparisonText.count >= 8 {
-            let matches: (Utterance) -> Bool = {
-                $0.source != source && abs($0.seconds - seconds) < 6 && $0.comparisonText == entry.comparisonText
-            }
-            if source == .room, entries.contains(where: matches) { return }
-            if source == .online { entries.removeAll(where: matches) }
+        var entry = Utterance(source: source, seconds: seconds, text: text)
+        let candidate = entry.comparisonText
+        let nearby: (Utterance) -> Bool = { $0.source != source && abs($0.seconds - seconds) < 6 }
+        if candidate.count >= 8, let match = entries.lastIndex(where: { nearby($0) && $0.comparisonText == candidate }) {
+            if source == .room { return }
+            entry.id = entries[match].id
+            entries[match] = entry
+            return
         }
+        if entries.reversed().prefix(30).contains(where: {
+            nearby($0) && TranscriptSimilarity.matches($0.comparisonText, candidate)
+        }) {
+            entry.overlapsOtherChannel = true
+        }
+        let firstEntry = entries.isEmpty
         entries.append(entry)
+        if firstEntry { checkpoint() }
     }
 
     private func queueLiveUpdate() {
@@ -129,13 +214,17 @@ final class Meeting {
         guard !pending.isEmpty else { return }
         liveTask = Task {
             defer { liveTask = nil }
-            if await summarize(pending, previous: draft) { summarizedIDs.formUnion(pending.map(\.id)) }
+            if await summarize(pending, previous: draft) {
+                summarizedIDs.formUnion(pending.map(\.id))
+                checkpoint()
+            }
         }
     }
 
     func stop() async {
         guard phase == .recording else { return }
         phase = .finishing
+        checkpoint()
         timer?.cancel()
         timer = nil
         liveTask?.cancel()
@@ -156,14 +245,21 @@ final class Meeting {
         output = nil
         levels.removeAll()
         await liveTask?.value
-        if !entries.isEmpty { await summarize(orderedEntries, previous: "") }
-        else if status.isEmpty { status = "받아쓴 발언이 없습니다. 선택한 입력의 음량과 권한을 확인하세요." }
+        checkpoint()
+        let pending = orderedEntries.filter { !summarizedIDs.contains($0.id) }
+        if !pending.isEmpty {
+            if await summarize(pending, previous: draft) { summarizedIDs.formUnion(pending.map(\.id)) }
+        } else if entries.isEmpty && status.isEmpty { status = "받아쓴 발언이 없습니다. 선택한 입력의 음량과 권한을 확인하세요." }
         phase = .idle
+        checkpoint()
     }
 
     func regenerate() async {
         guard phase == .idle, !entries.isEmpty, !generating else { return }
-        await summarize(orderedEntries, previous: "")
+        if await summarize(orderedEntries, previous: "") {
+            summarizedIDs = Set(entries.map(\.id))
+            checkpoint()
+        }
     }
 
     @discardableResult
@@ -173,7 +269,7 @@ final class Meeting {
         generating = true
         defer { generating = false }
         do {
-            let result = try await Minutes.update(previous: previous, entries: input)
+            let result = try await Minutes.update(previous: previous, entries: input, glossary: glossary)
             try Task.checkCancellation()
             draft = result
             return true
@@ -187,6 +283,8 @@ final class Meeting {
 
     func reset() {
         guard phase == .idle, !generating else { return }
+        do { try MeetingRecovery.remove() }
+        catch { status = "복구 자료 삭제: \(error.localizedDescription)"; return }
         title = ""
         entries.removeAll()
         summarizedIDs.removeAll()
@@ -197,17 +295,27 @@ final class Meeting {
         refresh()
     }
 
-    func export(includeTranscript: Bool) {
+    func export(includeTranscript: Bool, word: Bool = false) {
         let panel = NSSavePanel()
-        panel.allowedContentTypes = [UTType(filenameExtension: "md") ?? .plainText]
+        let extensionName = word ? "docx" : "md"
+        panel.allowedContentTypes = [UTType(filenameExtension: extensionName) ?? .data]
         let name = title.trimmingCharacters(in: .whitespacesAndNewlines)
-        panel.nameFieldStringValue = (name.isEmpty ? "회의록" : name.replacingOccurrences(of: "/", with: "-")) + ".md"
+        panel.nameFieldStringValue = (name.isEmpty ? "회의록" : name.replacingOccurrences(of: "/", with: "-")) + "." + extensionName
         guard panel.runModal() == .OK, let url = panel.url else { return }
         var body = "# \(name.isEmpty ? "회의록" : name)\n"
         if let started { body += "\n\(started.formatted(date: .abbreviated, time: .shortened))\n" }
         if !draft.isEmpty { body += "\n" + draft + "\n" }
         if includeTranscript { body += "\n## 받아쓰기\n\n" + transcript + "\n" }
-        do { try body.write(to: url, atomically: true, encoding: .utf8) }
+        do {
+            if word {
+                guard let templates = Bundle.main.resourceURL?.appendingPathComponent("Word") else {
+                    throw ScribeError("Word 서식 파일을 찾을 수 없습니다.")
+                }
+                try WordExport.save(body, to: url, templates: templates)
+            } else {
+                try body.write(to: url, atomically: true, encoding: .utf8)
+            }
+        }
         catch { status = "파일 저장: \(error.localizedDescription)" }
     }
 }

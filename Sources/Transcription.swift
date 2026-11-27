@@ -2,6 +2,22 @@ import AVFoundation
 import Foundation
 import Metal
 
+final class WhisperModel: @unchecked Sendable {
+    let engine: UnsafeMutableRawPointer
+    let recognitionQueue = DispatchQueue(label: "local.meetingscribe.whisper", qos: .userInitiated)
+
+    init(url: URL) throws {
+        let useGPU = MTLCreateSystemDefaultDevice() != nil
+        let backends = ScribeResources.hasBundledEngines ? ScribeResources.backends.path : nil
+        guard let engine = scribe_whisper_open(url.path, useGPU, backends) else {
+            throw ScribeError("Whisper 한국어 받아쓰기 모델을 열 수 없습니다.")
+        }
+        self.engine = engine
+    }
+
+    deinit { scribe_whisper_close(engine) }
+}
+
 final class SpeechChannel: @unchecked Sendable {
     static let sampleRate = 16_000
     static let modelName = "ggml-large-v3-turbo-q5_0.bin"
@@ -15,7 +31,8 @@ final class SpeechChannel: @unchecked Sendable {
 
     let format = AVAudioFormat(standardFormatWithSampleRate: Double(sampleRate), channels: 1)!
     private let engine: UnsafeMutableRawPointer
-    private let recognitionQueue = DispatchQueue(label: "local.meetingscribe.whisper", qos: .userInitiated)
+    private let model: WhisperModel
+    private let glossary: String
     private let (results, output) = AsyncStream.makeStream(of: Segment.self)
     private var reader: Task<Void, Never>?
     // Segmentation state is confined to the serial capture queue.
@@ -23,25 +40,24 @@ final class SpeechChannel: @unchecked Sendable {
     private var segmentStart: Double?
     private var quietSamples = 0
     private var loudSamples = 0
-    private let threshold: Float
+    private let minimumThreshold: Float
+    private var noiseFloor: Float = 0
 
     private struct Segment: Sendable {
         let text: String?
         let seconds: Double
     }
 
-    init(model: URL, source: Source, useGPU: Bool = true,
+    init(model: WhisperModel, source: Source, glossary: String,
          receive: @escaping @Sendable (String, Double) async -> Void,
          onError: @escaping @Sendable (String) async -> Void) throws {
-        let useGPU = useGPU && MTLCreateSystemDefaultDevice() != nil
-        let engine = ScribeResources.hasBundledEngines
-            ? scribe_whisper_open(model.path, useGPU, ScribeResources.backends.path)
-            : scribe_whisper_open(model.path, useGPU, nil)
-        guard let engine else {
-            throw ScribeError("Whisper 한국어 받아쓰기 모델을 열 수 없습니다.")
+        guard let engine = scribe_whisper_channel(model.engine) else {
+            throw ScribeError("Whisper 입력 채널을 초기화할 수 없습니다.")
         }
         self.engine = engine
-        self.threshold = source == .room ? 0.0015 : 0.001
+        self.model = model
+        self.glossary = String(glossary.prefix(400))
+        self.minimumThreshold = source == .room ? 0.0015 : 0.001
         let incoming = results
         self.reader = Task {
             for await segment in incoming {
@@ -54,7 +70,7 @@ final class SpeechChannel: @unchecked Sendable {
         }
     }
 
-    deinit { scribe_whisper_close(engine) }
+    deinit { scribe_whisper_end_channel(engine) }
 
     func append(_ buffer: AVAudioPCMBuffer, endTime: Double) {
         guard let pointer = buffer.floatChannelData?.pointee else { return }
@@ -63,15 +79,17 @@ final class SpeechChannel: @unchecked Sendable {
         let block = UnsafeBufferPointer(start: pointer, count: count)
         let rms = sqrt(block.reduce(Float(0)) { $0 + $1 * $1 } / Float(count))
         let rate = Self.sampleRate
+        let threshold = max(minimumThreshold, noiseFloor * 2.5)
         if rms >= threshold {
             quietSamples = 0
             loudSamples += count
         } else {
             quietSamples += count
+            noiseFloor += (rms - noiseFloor) * 0.05
         }
         if segmentStart == nil { segmentStart = max(0, endTime - Double(count) / Double(rate)) }
         samples.append(contentsOf: block)
-        if samples.count >= rate * 7 || (samples.count >= rate * 2 && quietSamples >= rate * 7 / 10) {
+        if samples.count >= rate * 22 || (samples.count >= rate * 2 && quietSamples >= rate * 8 / 10) {
             flush()
         }
     }
@@ -79,21 +97,26 @@ final class SpeechChannel: @unchecked Sendable {
     func flush() {
         let slice = samples
         let seconds = segmentStart ?? 0
+        let hasLittleSpeech = loudSamples < Self.sampleRate
         segmentStart = nil
         samples = []
         defer { loudSamples = 0; quietSamples = 0 }
         guard loudSamples >= Self.sampleRate / 6 else { return }
-        recognitionQueue.async { [self] in
+        model.recognitionQueue.async { [self] in
             let text = slice.withUnsafeBufferPointer { buffer in
-                scribe_whisper_run(engine, buffer.baseAddress, Int32(buffer.count)).map { String(cString: $0) }
+                scribe_whisper_run(engine, buffer.baseAddress, Int32(buffer.count), glossary).map { String(cString: $0) }
             }
-            output.yield(Segment(text: text?.trimmingCharacters(in: .whitespacesAndNewlines), seconds: seconds))
+            let cleaned = text?.trimmingCharacters(in: .whitespacesAndNewlines)
+            let phrase = cleaned?.trimmingCharacters(in: .punctuationCharacters)
+            let boilerplate = ["시청해 주셔서 감사합니다", "시청해주셔서 감사합니다", "구독과 좋아요 부탁드립니다"]
+            if hasLittleSpeech, let phrase, boilerplate.contains(phrase) { return }
+            output.yield(Segment(text: cleaned, seconds: seconds))
         }
     }
 
     func finish() async {
         await withCheckedContinuation { continuation in
-            recognitionQueue.async { continuation.resume() }
+            model.recognitionQueue.async { continuation.resume() }
         }
         output.finish()
         await reader?.value

@@ -4,11 +4,13 @@ import SwiftUI
 @main
 struct MeetingScribeApp: App {
     @State private var meeting = Meeting()
+    @NSApplicationDelegateAdaptor(ScribeAppDelegate.self) private var appDelegate
 
     var body: some Scene {
         Window("회의록 서기", id: "scribe") {
             MeetingView(meeting: meeting)
                 .frame(minWidth: 850, minHeight: 580)
+                .onAppear { appDelegate.meeting = meeting }
         }
         .defaultSize(width: 1060, height: 710)
     }
@@ -18,6 +20,8 @@ private struct MeetingView: View {
     @Bindable var meeting: Meeting
     @Environment(\.scenePhase) private var scenePhase
     @State private var confirmingReset = false
+    @State private var confirmingRegenerate = false
+    @State private var editingGlossary = false
     @State private var followingTranscript = true
 
     private var busy: Bool { meeting.phase != .idle || meeting.generating }
@@ -41,7 +45,42 @@ private struct MeetingView: View {
             }
         }
         .padding(20)
-        .onAppear { meeting.refresh() }
+        .background(CloseConfirmation(meeting: meeting))
+        .onAppear {
+            meeting.loadRecovery()
+            meeting.refresh()
+            MinutesServer.shared.prewarm()
+        }
+        .task {
+            while !Task.isCancelled {
+                do { try await Task.sleep(for: .seconds(60)) } catch { break }
+                meeting.checkpoint()
+            }
+        }
+        .alert("자동 저장된 회의를 복구할까요?", isPresented: Binding(
+            get: { meeting.recovery != nil },
+            set: { _ in }
+        )) {
+            Button("복구") { meeting.restoreRecovery() }
+            Button("자동 저장본 지우기", role: .destructive) { meeting.discardRecovery() }
+        } message: {
+            Text("마지막으로 저장된 받아쓰기와 회의록을 불러올 수 있습니다.")
+        }
+        .confirmationDialog("편집한 회의록을 새로 생성할까요?",
+                            isPresented: $confirmingRegenerate, titleVisibility: .visible) {
+            Button("다시 생성", role: .destructive) { Task { await meeting.regenerate() } }
+            Button("취소", role: .cancel) {}
+        } message: {
+            Text("생성이 성공하면 현재 회의록이 새 초안으로 교체됩니다.")
+        }
+        .sheet(isPresented: $editingGlossary) {
+            VStack(alignment: .leading, spacing: 12) {
+                Text("사내 용어집").font(.headline)
+                Text("회사명, 제품명, 참석자 이름, 약어를 입력하세요.")
+                TextEditor(text: $meeting.glossary).frame(width: 400, height: 180)
+                Button("완료") { editingGlossary = false }.keyboardShortcut(.defaultAction)
+            }.padding(20)
+        }
         .onChange(of: scenePhase) { _, phase in
             if phase == .active, meeting.phase == .idle { meeting.refresh() }
         }
@@ -63,6 +102,7 @@ private struct MeetingView: View {
                     .textFieldStyle(.plain)
                     .accessibilityLabel("회의 제목")
                 Spacer()
+                Button("용어집", systemImage: "book") { editingGlossary = true }.disabled(busy)
                 switch meeting.phase {
                 case .idle:
                     if meeting.hasMaterial {
@@ -70,7 +110,7 @@ private struct MeetingView: View {
                     } else {
                         Button("기록 시작", systemImage: "record.circle") { Task { await meeting.start() } }
                             .buttonStyle(.borderedProminent)
-                            .disabled(!meeting.confirmed || busy)
+                            .disabled(!meeting.confirmed || busy || meeting.recoveryBlocked)
                     }
                 case .preparing:
                     ProgressView().controlSize(.small)
@@ -93,6 +133,12 @@ private struct MeetingView: View {
                         }
                     }
                     .fixedSize()
+                    Picker("마이크", selection: $meeting.microphoneID) {
+                        Text("시스템 기본").tag("")
+                        ForEach(meeting.microphones, id: \.uniqueID) { microphone in
+                            Text(microphone.localizedName).tag(microphone.uniqueID)
+                        }
+                    }.fixedSize()
                     Button("새로고침", systemImage: "arrow.clockwise") { meeting.refresh() }
                         .labelStyle(.iconOnly)
                     Spacer()
@@ -166,7 +212,8 @@ private struct MeetingView: View {
                 Spacer()
                 if meeting.generating { ProgressView().controlSize(.small) }
                 Button("다시 생성", systemImage: "arrow.clockwise") {
-                    Task { await meeting.regenerate() }
+                    if meeting.draft.isEmpty { Task { await meeting.regenerate() } }
+                    else { confirmingRegenerate = true }
                 }.disabled(busy || meeting.entries.isEmpty)
             }
             ZStack(alignment: .topLeading) {
@@ -195,9 +242,62 @@ private struct MeetingView: View {
                     Button("회의록만 저장") { meeting.export(includeTranscript: false) }
                         .disabled(meeting.draft.isEmpty)
                     Button("받아쓰기 포함 저장") { meeting.export(includeTranscript: true) }
+                    Button("Word로 저장") { meeting.export(includeTranscript: false, word: true) }
+                        .disabled(meeting.draft.isEmpty)
                 }.disabled(busy || !meeting.hasMaterial)
             }
         }
         .padding(.leading, 9)
+    }
+}
+
+
+@MainActor
+private final class ScribeAppDelegate: NSObject, NSApplicationDelegate {
+    weak var meeting: Meeting?
+
+    func applicationWillTerminate(_ notification: Notification) { MinutesServer.shared.shutdown() }
+
+    func applicationShouldTerminate(_ sender: NSApplication) -> NSApplication.TerminateReply {
+        guard sender.windows.contains(where: { $0.isVisible }) else { return .terminateNow }
+        return meeting?.confirmClosing() == false ? .terminateCancel : .terminateNow
+    }
+}
+
+private struct CloseConfirmation: NSViewRepresentable {
+    let meeting: Meeting
+
+    func makeNSView(context: Context) -> WindowObserver {
+        let observer = WindowObserver()
+        observer.meeting = meeting
+        return observer
+    }
+
+    func updateNSView(_ observer: WindowObserver, context: Context) {}
+
+    final class WindowObserver: NSView, NSWindowDelegate {
+        weak var meeting: Meeting?
+        nonisolated(unsafe) private weak var originalDelegate: (any NSWindowDelegate)?
+
+        override func viewDidMoveToWindow() {
+            super.viewDidMoveToWindow()
+            guard let window, window.delegate !== self else { return }
+            originalDelegate = window.delegate
+            window.delegate = self
+        }
+
+        func windowShouldClose(_ sender: NSWindow) -> Bool {
+            guard meeting?.confirmClosing() != false else { return false }
+            return originalDelegate?.windowShouldClose?(sender) ?? true
+        }
+
+        override func responds(to selector: Selector!) -> Bool {
+            super.responds(to: selector) || originalDelegate?.responds(to: selector) == true
+        }
+
+        override func forwardingTarget(for selector: Selector!) -> Any? {
+            if originalDelegate?.responds(to: selector) == true { return originalDelegate }
+            return super.forwardingTarget(for: selector)
+        }
     }
 }

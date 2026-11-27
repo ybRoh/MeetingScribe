@@ -5,7 +5,7 @@ enum ToDoList {
         var body: [String] = []
         var items: [String] = []
         var inTasks = false
-        for line in markdown.components(separatedBy: .newlines) {
+        for line in markdown.replacingOccurrences(of: "\r\n", with: "\n").components(separatedBy: .newlines) {
             let trimmed = line.trimmingCharacters(in: .whitespaces)
             if trimmed == "```" || trimmed == "```markdown" { continue }
             if trimmed.range(of: #"^#{1,6}\s+"#, options: .regularExpression) != nil {

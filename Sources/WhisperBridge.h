@@ -1,5 +1,7 @@
 #include <stdbool.h>
 
 void *scribe_whisper_open(const char *path, bool use_gpu, const char *backends);
-const char *scribe_whisper_run(void *engine, const float *samples, int count);
-void scribe_whisper_close(void *engine);
+void *scribe_whisper_channel(void *model);
+const char *scribe_whisper_run(void *channel, const float *samples, int count, const char *prompt);
+void scribe_whisper_end_channel(void *channel);
+void scribe_whisper_close(void *model);

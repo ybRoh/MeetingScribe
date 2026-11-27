@@ -2,10 +2,11 @@
 set -euo pipefail
 cd "$(dirname "$0")"
 root="$PWD"
+version="$(cat VERSION)"
 stage="$(mktemp -d "${TMPDIR:-/tmp}/meetingscribe-release.XXXXXX")"
 trap 'rm -rf "$stage"' EXIT
 app="$stage/image/회의록 서기.app"
-archive="$stage/MeetingScribe-1.1.0-macOS-arm64.zip"
+archive="$stage/MeetingScribe-$version-macOS-arm64.zip"
 signature="${SCRIBE_CODESIGN_IDENTITY:--}"
 sign_options=()
 if [[ "$signature" != "-" ]]; then sign_options=(--options runtime); fi
@@ -43,7 +44,7 @@ def bundle(source):
 def linked_paths(binary):
     return [line.strip().split(' (', 1)[0] for line in run('otool', '-L', binary).splitlines()[1:]]
 
-helper = bundle(prefixes[2] / 'bin/llama-completion')
+helper = bundle(prefixes[2] / 'bin/llama-server')
 plugins = [bundle(path) for path in sorted((prefixes[1] / 'libexec').glob('libggml-*.so'))]
 queue = [main, helper, *plugins]
 seen = set()
@@ -106,9 +107,9 @@ for binary in "$app/Contents/Frameworks/"*; do
 done
 codesign --force --sign "$signature" ${sign_options[@]+"${sign_options[@]}"} "$app"
 codesign --verify --strict --deep "$app"
-"$app/Contents/Frameworks/llama-completion" --version
-cat > "$stage/image/사용 안내.txt" <<'GUIDE'
-회의록 서기 1.1.0 · Apple Silicon
+"$app/Contents/Frameworks/llama-server" --version
+cat > "$stage/image/사용 안내.txt" <<GUIDE
+회의록 서기 $version · Apple Silicon
 ZIP을 풀고 회의록 서기 앱을 응용 프로그램 폴더로 옮긴 뒤 실행하세요.
 참석자 동의를 확인하고 기록 시작을 누른 뒤 마이크 접근을 허용하세요.
 기록 종료 후 회의록과 하단 To-Do List를 편집하거나 복사하고 Markdown으로 저장할 수 있습니다.
@@ -117,4 +118,4 @@ ZIP을 풀고 회의록 서기 앱을 응용 프로그램 폴더로 옮긴 뒤 �
 GUIDE
 ditto -c -k --sequesterRsrc "$stage/image" "$archive"
 unzip -tq "$archive"
-mv "$archive" "$root/dist/MeetingScribe-1.1.0-macOS-arm64.zip"
+mv "$archive" "$root/dist/MeetingScribe-$version-macOS-arm64.zip"

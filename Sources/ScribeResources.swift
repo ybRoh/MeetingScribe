@@ -15,7 +15,12 @@ enum ScribeResources {
     static func model(named name: String) -> URL {
         let bundled = Bundle.main.resourceURL?.appendingPathComponent("models").appendingPathComponent(name)
         if let bundled, FileManager.default.isReadableFile(atPath: bundled.path) { return bundled }
-        return Bundle.main.bundleURL.deletingLastPathComponent()
+        let sibling = Bundle.main.bundleURL.deletingLastPathComponent()
             .appendingPathComponent("models").appendingPathComponent(name)
+        if FileManager.default.isReadableFile(atPath: sibling.path) { return sibling }
+        let installed = FileManager.default.urls(for: .applicationSupportDirectory, in: .userDomainMask).first?
+            .appendingPathComponent("MeetingScribe/Models").appendingPathComponent(name)
+        if let installed, FileManager.default.isReadableFile(atPath: installed.path) { return installed }
+        return sibling
     }
 }

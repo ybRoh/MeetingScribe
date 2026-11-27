@@ -5,11 +5,6 @@ import Foundation
 import os
 import ScreenCaptureKit
 
-enum Source: String, CaseIterable, Sendable {
-    case room = "회의실"
-    case online = "온라인"
-}
-
 struct ScribeError: LocalizedError {
     let errorDescription: String?
     init(_ message: String) { errorDescription = message }
@@ -36,6 +31,10 @@ final class CaptureOutput: NSObject, SCStreamOutput, SCStreamDelegate, @unchecke
         self.channels = channels
         self.levels = levels
         self.failure = failure
+    }
+
+    func microphoneStopped() {
+        failure("마이크 연결이 끊기거나 녹음이 중단되었습니다. 확보한 발언을 저장합니다.", true)
     }
 
     func stream(_ stream: SCStream, didStopWithError error: any Error) {
@@ -130,6 +129,11 @@ final class CaptureOutput: NSObject, SCStreamOutput, SCStreamDelegate, @unchecke
 
 @MainActor
 enum MeetingCapture {
+    static func microphones() -> [AVCaptureDevice] {
+        AVCaptureDevice.DiscoverySession(deviceTypes: [.microphone, .external],
+                                         mediaType: .audio, position: .unspecified).devices
+    }
+
     static func apps() -> [NSRunningApplication] {
         NSWorkspace.shared.runningApplications.filter {
             let id = $0.bundleIdentifier ?? ""
@@ -137,7 +141,7 @@ enum MeetingCapture {
         }
     }
 
-    static func start(bundleID: String, output: CaptureOutput) async throws -> SCStream {
+    static func start(bundleID: String, microphoneID: String, output: CaptureOutput) async throws -> SCStream {
         guard await AVCaptureDevice.requestAccess(for: .audio) else {
             throw ScribeError("시스템 설정 → 개인정보 보호 및 보안 → 마이크에서 접근을 허용하세요.")
         }
@@ -156,7 +160,7 @@ enum MeetingCapture {
         config.sampleRate = 48_000
         config.channelCount = 1
         config.captureMicrophone = true
-        config.microphoneCaptureDeviceID = AVCaptureDevice.default(.microphone, for: .audio, position: .unspecified)?.uniqueID
+        config.microphoneCaptureDeviceID = microphoneID.isEmpty ? nil : microphoneID
         let stream = SCStream(filter: filter, configuration: config, delegate: output)
         try stream.addStreamOutput(output, type: .audio, sampleHandlerQueue: output.queue)
         try stream.addStreamOutput(output, type: .microphone, sampleHandlerQueue: output.queue)
@@ -170,10 +174,11 @@ final class MicrophoneCapture: NSObject, AVCaptureAudioDataOutputSampleBufferDel
     private let session = AVCaptureSession()
     private let controlQueue = DispatchQueue(label: "local.meetingscribe.microphone")
     private let destination: CaptureOutput
+    private var observers: [NSObjectProtocol] = []
 
     private init(destination: CaptureOutput) { self.destination = destination }
 
-    static func start(output: CaptureOutput) async throws -> MicrophoneCapture {
+    static func start(deviceID: String, output: CaptureOutput) async throws -> MicrophoneCapture {
         guard await AVCaptureDevice.requestAccess(for: .audio) else {
             throw ScribeError("시스템 설정 → 개인정보 보호 및 보안 → 마이크에서 접근을 허용하세요.")
         }
@@ -181,7 +186,7 @@ final class MicrophoneCapture: NSObject, AVCaptureAudioDataOutputSampleBufferDel
         try await withCheckedThrowingContinuation { (continuation: CheckedContinuation<Void, Error>) in
             capture.controlQueue.async {
                 do {
-                    try capture.startSession()
+                    try capture.startSession(deviceID: deviceID)
                     continuation.resume()
                 } catch {
                     continuation.resume(throwing: error)
@@ -191,8 +196,10 @@ final class MicrophoneCapture: NSObject, AVCaptureAudioDataOutputSampleBufferDel
         return capture
     }
 
-    private func startSession() throws {
-        guard let device = AVCaptureDevice.default(.microphone, for: .audio, position: .unspecified) else {
+    private func startSession(deviceID: String) throws {
+        let selected = deviceID.isEmpty ? AVCaptureDevice.default(.microphone, for: .audio, position: .unspecified)
+            : AVCaptureDevice(uniqueID: deviceID)
+        guard let device = selected else {
             throw ScribeError("사용할 수 있는 마이크가 없습니다.")
         }
         let input = try AVCaptureDeviceInput(device: device)
@@ -203,13 +210,29 @@ final class MicrophoneCapture: NSObject, AVCaptureAudioDataOutputSampleBufferDel
         session.addInput(input)
         session.addOutput(output)
         output.setSampleBufferDelegate(self, queue: destination.queue)
+        let center = NotificationCenter.default
+        observers = [
+            center.addObserver(forName: AVCaptureSession.runtimeErrorNotification, object: session, queue: nil) {
+                [weak self] _ in self?.destination.microphoneStopped()
+            },
+            center.addObserver(forName: AVCaptureSession.wasInterruptedNotification, object: session, queue: nil) {
+                [weak self] _ in self?.destination.microphoneStopped()
+            },
+            center.addObserver(forName: AVCaptureDevice.wasDisconnectedNotification, object: device, queue: nil) {
+                [weak self] _ in self?.destination.microphoneStopped()
+            }
+        ]
         session.startRunning()
         guard session.isRunning else { throw ScribeError("마이크를 시작할 수 없습니다.") }
     }
 
+    deinit { for observer in observers { NotificationCenter.default.removeObserver(observer) } }
+
     func stop() async {
         await withCheckedContinuation { continuation in
             controlQueue.async { [self] in
+                for observer in observers { NotificationCenter.default.removeObserver(observer) }
+                observers.removeAll()
                 session.stopRunning()
                 continuation.resume()
             }

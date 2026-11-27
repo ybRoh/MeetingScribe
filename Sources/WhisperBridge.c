@@ -7,6 +7,7 @@
 
 typedef struct {
     struct whisper_context *model;
+    struct whisper_state *state;
     char *text;
 } Engine;
 
@@ -29,18 +30,22 @@ void *scribe_whisper_open(const char *path, bool use_gpu, const char *backends) 
     if (!ggml_backend_dev_by_type(GGML_BACKEND_DEVICE_TYPE_CPU)) return NULL;
     struct whisper_context_params params = whisper_context_default_params();
     params.use_gpu = use_gpu && ggml_backend_dev_by_type(GGML_BACKEND_DEVICE_TYPE_GPU);
-    struct whisper_context *model = whisper_init_from_file_with_params(path, params);
-    if (!model) return NULL;
-    Engine *engine = calloc(1, sizeof(Engine));
-    if (!engine) {
-        whisper_free(model);
-        return NULL;
-    }
-    engine->model = model;
-    return engine;
+    return whisper_init_from_file_with_params_no_state(path, params);
 }
 
-const char *scribe_whisper_run(void *opaque, const float *samples, int count) {
+void *scribe_whisper_channel(void *model) {
+    Engine *channel = calloc(1, sizeof(Engine));
+    if (!channel) return NULL;
+    channel->model = model;
+    channel->state = whisper_init_state(model);
+    if (!channel->state) {
+        free(channel);
+        return NULL;
+    }
+    return channel;
+}
+
+const char *scribe_whisper_run(void *opaque, const float *samples, int count, const char *prompt) {
     Engine *engine = opaque;
     free(engine->text);
     engine->text = NULL;
@@ -48,21 +53,23 @@ const char *scribe_whisper_run(void *opaque, const float *samples, int count) {
     struct whisper_full_params params = whisper_full_default_params(WHISPER_SAMPLING_GREEDY);
     params.language = "ko";
     params.no_context = true;
+    params.initial_prompt = prompt && *prompt ? prompt : NULL;
+    params.no_speech_thold = 0.5f;
     params.no_timestamps = true;
     params.print_progress = false;
     params.n_threads = 4;
-    if (whisper_full(engine->model, params, samples, count) != 0) return NULL;
+    if (whisper_full_with_state(engine->model, engine->state, params, samples, count) != 0) return NULL;
 
-    int segments = whisper_full_n_segments(engine->model);
+    int segments = whisper_full_n_segments_from_state(engine->state);
     size_t length = 0;
     for (int i = 0; i < segments; i++) {
-        length += strlen(whisper_full_get_segment_text(engine->model, i));
+        length += strlen(whisper_full_get_segment_text_from_state(engine->state, i));
     }
     engine->text = calloc(length + 1, 1);
     if (!engine->text) return NULL;
     char *position = engine->text;
     for (int i = 0; i < segments; i++) {
-        const char *text = whisper_full_get_segment_text(engine->model, i);
+        const char *text = whisper_full_get_segment_text_from_state(engine->state, i);
         size_t size = strlen(text);
         memcpy(position, text, size);
         position += size;
@@ -70,9 +77,13 @@ const char *scribe_whisper_run(void *opaque, const float *samples, int count) {
     return engine->text;
 }
 
-void scribe_whisper_close(void *opaque) {
+void scribe_whisper_end_channel(void *opaque) {
     Engine *engine = opaque;
-    whisper_free(engine->model);
+    whisper_free_state(engine->state);
     free(engine->text);
     free(engine);
+}
+
+void scribe_whisper_close(void *model) {
+    whisper_free(model);
 }

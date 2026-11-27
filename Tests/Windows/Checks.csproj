@@ -1,0 +1,11 @@
+<Project Sdk="Microsoft.NET.Sdk">
+  <PropertyGroup>
+    <TargetFramework>net10.0</TargetFramework>
+    <OutputType>Exe</OutputType>
+    <ImplicitUsings>enable</ImplicitUsings>
+  </PropertyGroup>
+  <ItemGroup>
+    <Compile Include="../../Windows/ToDoList.cs" Link="ToDoList.cs" />
+    <Content Include="../ToDoCases.json" Link="ToDoCases.json" CopyToOutputDirectory="PreserveNewest" />
+  </ItemGroup>
+</Project>

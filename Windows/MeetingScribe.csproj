@@ -6,9 +6,12 @@
     <EnableWindowsTargeting>true</EnableWindowsTargeting>
     <ImplicitUsings>enable</ImplicitUsings>
     <Nullable>enable</Nullable>
-    <Version>1.1.0</Version>
+    <Version>$([System.IO.File]::ReadAllText('$(MSBuildProjectDirectory)/../VERSION').Trim())</Version>
   </PropertyGroup>
   <ItemGroup>
+    <Content Include="../Shared/MinutesPrompt.txt" Link="MinutesPrompt.txt" CopyToOutputDirectory="PreserveNewest" />
+    <Content Include="../Shared/Word/%5BContent_Types%5D.xml" Link="Word/%5BContent_Types%5D.xml" CopyToOutputDirectory="PreserveNewest" />
+    <Content Include="../Shared/Word/_rels/.rels" Link="Word/_rels/.rels" CopyToOutputDirectory="PreserveNewest" />
     <PackageReference Include="NAudio.WinMM" Version="2.2.1" />
   </ItemGroup>
 </Project>

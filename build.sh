@@ -8,8 +8,12 @@ if [[ ! -r "$whisper/include/whisper.h" ]]; then
   echo 'whisper.cpp를 설치하세요. brew install whisper.cpp' >&2
   exit 1
 fi
-mkdir -p "$app/Contents/MacOS" "$PWD/dist/module-cache"
+version="$(cat VERSION)"
+mkdir -p "$app/Contents/MacOS" "$app/Contents/Resources" "$PWD/dist/module-cache"
 cp Info.plist "$app/Contents/Info.plist"
+/usr/libexec/PlistBuddy -c "Add :CFBundleVersion string $version" -c "Add :CFBundleShortVersionString string $version" "$app/Contents/Info.plist"
+cp Shared/MinutesPrompt.txt "$app/Contents/Resources/"
+cp -R Shared/Word "$app/Contents/Resources/"
 xcrun clang -O2 -mmacosx-version-min=26.0 -I "$whisper/include" -I "$ggml/include" "-DSCRIBE_GGML_BACKENDS=\"$ggml/libexec\"" -c Sources/WhisperBridge.c -o dist/WhisperBridge.o
 xcrun swiftc -module-cache-path "$PWD/dist/module-cache" -swift-version 6 -O -target arm64-apple-macosx26.0 \
   -import-objc-header Sources/WhisperBridge.h -L "$whisper/lib" -lwhisper -L "$ggml/lib" -lggml \
